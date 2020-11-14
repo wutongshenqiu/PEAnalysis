@@ -4,13 +4,9 @@
 #include <string>
 #include <iostream>
 #include <fstream>
+#include <filesystem>
 #include <map>
 #include <tuple>
-#include "utils.hpp"
-
-
-// 剩下的任务
-// 1. 添加新节
 
 
 // 假定 PE 文件头的大小不超过 4096 个字节
@@ -165,15 +161,58 @@ private:
 		std::memcpy(buffer, &word, sizeof(WORD));
 
 		if (!file.write(buffer, sizeof(WORD))) {
-			std::cerr << "写入文件失败" << std::endl;
+			std::cerr << "字写入文件失败" << std::endl;
 			std::exit(EXIT_FAILURE);
 		}
 
 		delete[] buffer;
 	}
 
+	// 写文件的下一个双字
+	void WriteNextDWORD(std::ofstream& file, DWORD dword) {
+		CHAR* buffer = new CHAR[sizeof(DWORD) + 1];
+		std::memcpy(buffer, &dword, sizeof(DWORD));
+
+		if (!file.write(buffer, sizeof(DWORD))) {
+			std::cerr << "双字写入文件失败" << std::endl;
+			std::exit(EXIT_FAILURE);
+		}
+
+		delete[] buffer;
+	}
+
+	// 将缓冲区中 size 大小的数据写入文件
+	void WriteBuffer(std::ofstream& file, const CHAR* buffer, ULONGLONG size) {
+		if (!file.write(buffer, size)) {
+			std::cerr << "缓冲区写入文件失败" << std::endl;
+			std::exit(EXIT_FAILURE);
+		}
+	}
+
+	// 在字符串后补零，使其按照文件对其
+	void ToFileAlignment(std::string& str) {
+		DWORD append_num = str.size() % GetFileAlignment();
+		if (append_num) {
+			append_num = GetFileAlignment() - append_num;
+		}
+		for (DWORD i = 0; i != append_num; i++) {
+			str.push_back(0x00);
+		}
+	}
+
+
+	// 返回内存对齐后的大小
+	DWORD ToSectionAlignment(DWORD size) {
+		// 按照内存对齐
+		DWORD section_alignment = GetSectionAlignment();
+		if (size % section_alignment) {
+			return (1 + (size / section_alignment)) * section_alignment;
+		}
+		return size;
+	}
+
 public:
-	void ReadPEHeaderByName(std::string pe_path) {
+	void LoadPE(std::string pe_path) {
 		path = pe_path;
 
 		std::ifstream file(pe_path, std::ios::binary);
@@ -193,6 +232,7 @@ public:
 		delete[] buffer;
 	}
 
+	// 获取节数量
 	WORD GetSectionsNumber() {
 		switch (type) {
 		case PE32: {
@@ -204,18 +244,73 @@ public:
 		}
 	}
 
+	// NT映像头 FOA
 	DWORD GetNTHeaderFOA() {
 		return header.mz_header.e_lfanew;
 	}
 
+	// 返回可选文件头起始 FOA
 	DWORD GetOptionalHeaderFOA() {
 		return GetNTHeaderFOA() + 24;
 	}
 
+	// 返回节表头起始 FOA
 	DWORD GetSectionHeaderFOA() {
 		return GetNTHeaderFOA() + IMAGE_SIZEOF_FILE_HEADER + GetSizeOfOptionalHeader() + 4;
 	}
 
+	// 返回节表头的末尾 FOA
+	DWORD GetEndSectionHeaderFOA() {
+		return IMAGE_SIZEOF_SECTION_HEADER * GetSectionsNumber() + GetSectionHeaderFOA();
+	}
+
+	// 如果要新增加节，则该节起始的 FOA
+	// TODO
+	// 这里有个问题
+	// 对于某些文件(user32.dll)，节的末尾不是文件的末尾
+	// 似乎是 certification table
+	ULONGLONG GetNewSectionFOA() {
+		// 确保没有 Certification table
+		IMAGE_DATA_DIRECTORY certification_table = GetImageDataDirectorEntry(IMAGE_DIRECTORY_ENTRY_SECURITY);
+		if (certification_table.Size || certification_table.VirtualAddress) {
+			std::cerr << "不支持在有 Certification Table 的PE文件中新增节" << std::endl;
+			std::exit(EXIT_FAILURE);
+		}
+		ULONGLONG file_size = GetFileSize();
+		if (file_size % GetFileAlignment()) {
+			std::cerr << "奇怪的错误，文件大小不遵照文件对齐" << std::endl;
+			std::exit(EXIT_FAILURE);
+		}
+		return file_size;
+	}
+
+	// 新节的起始 RVA
+	ULONGLONG GetNewSectionRVA() {
+		// 确保没有 Certification table
+		IMAGE_DATA_DIRECTORY certification_table = GetImageDataDirectorEntry(IMAGE_DIRECTORY_ENTRY_SECURITY);
+		if (certification_table.Size || certification_table.VirtualAddress) {
+			std::cerr << "不支持在有 Certification Table 的PE文件中新增节" << std::endl;
+			std::exit(EXIT_FAILURE);
+		}
+		// 遍历节头找到最后一个节
+		int last_header_index = 0;
+		for (int i = 1; i < header.section_headers.size(); i++) {
+			if (header.section_headers[i].VirtualAddress > header.section_headers[last_header_index].VirtualAddress) {
+				last_header_index = i;
+			}
+		}
+		DWORD last_header_rva = header.section_headers[last_header_index].VirtualAddress;
+		DWORD last_header_size = header.section_headers[last_header_index].SizeOfRawData;
+		// 按照内存对齐
+		return last_header_rva + ToSectionAlignment(last_header_size);
+	}
+
+	// 返回文件的大小
+	ULONGLONG GetFileSize() {
+		return std::filesystem::file_size(path);
+	}
+
+	// 返回可选文件头的大小
 	WORD GetSizeOfOptionalHeader() {
 		switch (type) {
 		case PE32: {
@@ -227,6 +322,7 @@ public:
 		}
 	}
 
+	// 返回代码段的大小
 	DWORD GetSizeOfCode() {
 		switch (type) {
 		case PE32: {
@@ -238,6 +334,7 @@ public:
 		}
 	}
 
+	// 返回头部(包括MZ头、DOS Stub、NT映像头和节表)的大小
 	DWORD GetSizeOfHeaders() {
 		switch (type) {
 		case PE32: {
@@ -249,6 +346,7 @@ public:
 		}
 	}
 
+	// 程序入口 RVA
 	DWORD GetEntryPointRVA() {
 		switch (type) {
 		case PE32: {
@@ -260,10 +358,23 @@ public:
 		}
 	}
 
+	// 设置程序入口点
+	void SetEntryPoint(DWORD entry_point) {
+		std::ofstream file(path, std::ios::binary || std::ios::ate);
+		// 64 位和 32 位的偏移相等
+		file.seekp(GetOptionalHeaderFOA() + 16, std::ios::beg);
+		
+		WriteNextDWORD(file, entry_point);
+
+		file.close();
+	}
+
+	// 程序入口点对应 FOA
 	DWORD GetEntryPointFOA() {
 		return RVAToFOA(GetEntryPointRVA());
 	}
-
+	
+	// 代码段 RVA
 	DWORD GetBaseOfCodeRVA() {
 		switch (type) {
 		case PE32: {
@@ -285,7 +396,8 @@ public:
 		}
 		}
 	}
-
+	
+	// 内存对齐
 	DWORD GetSectionAlignment() {
 		switch (type) {
 		case PE32: {
@@ -297,6 +409,7 @@ public:
 		}
 	}
 
+	// 节对齐
 	DWORD GetFileAlignment() {
 		switch (type) {
 		case PE32: {
@@ -347,6 +460,7 @@ public:
 	//	std::exit(EXIT_FAILURE);
 	//}
 
+	// 获取所有节的名称
 	std::vector<std::string> GetSectionNames() {
 		std::vector<std::string> names;
 		for (auto it = header.section_headers.begin(); it != header.section_headers.end(); it++) {
@@ -398,6 +512,7 @@ public:
 		return function_rva;
 	}
 
+	// 获取所有的 Import Descriptor
 	std::vector<IMAGE_IMPORT_DESCRIPTOR> GetImageImportDescriptors() {
 		IMAGE_DATA_DIRECTORY import_entry = GetImageDataDirectorEntry(IMAGE_DIRECTORY_ENTRY_IMPORT);
 		DWORD import_entry_rva = import_entry.VirtualAddress;
@@ -556,6 +671,7 @@ public:
 		}
 	}
 
+	// 所有的 thunk data
 	std::vector<IMAGE_THUNK_DATA32> GetImageThunkData32(IMAGE_IMPORT_DESCRIPTOR descriptor) {
 		std::vector<IMAGE_THUNK_DATA32> thunk_vector;
 		DWORD thunk_rva = descriptor.FirstThunk;
@@ -633,7 +749,7 @@ public:
 		file_out.close();
 
 		// 重新导入
-		ReadPEHeaderByName(path);
+		LoadPE(path);
 	}
 	void CloseASLR() {
 		ASLRAction(true);
@@ -643,14 +759,114 @@ public:
 		ASLRAction(false);
 	}
 
+	IMAGE_SECTION_HEADER CreateNewSectionHeader(
+		const BYTE* name,
+		const DWORD characteristics = 0,
+		const DWORD rva = 0,
+		const DWORD foa = 0,
+		const DWORD size = 0,
+		const DWORD misc = 0,
+		const DWORD pointer_to_relocations = 0,
+		const WORD pointer_to_linenumbers = 0,
+		const WORD number_of_relocations = 0,
+		const WORD number_of_linenumbers = 0
+	) {
+		IMAGE_SECTION_HEADER header;
+		std::memcpy(&header.Name, name, IMAGE_SIZEOF_SHORT_NAME);
+		std::memcpy(&header.Misc, &misc, sizeof(DWORD));
+		header.VirtualAddress = rva;
+		header.SizeOfRawData = size;
+		header.PointerToRawData = foa;
+		header.PointerToRelocations = pointer_to_relocations;
+		header.PointerToLinenumbers = pointer_to_linenumbers;
+		header.NumberOfRelocations = number_of_relocations;
+		header.NumberOfLinenumbers = number_of_linenumbers;
+		header.Characteristics = characteristics;
+		
+		return header;
+	}
+
+	// 添加一个新节
+	// 包括以下步骤
+	//		1. 在文件末尾追加写一个新节(需要注意不满足文件对齐的部分要补零)
+	//		2. 在节表中新增一个节头
+	//		3. 增加 FILE_HEADER 中的 NumberOfSections 字段
+	//		4. 调整可选文件头中的 SizeOfImage
+	void AddNewSection(
+		std::string buffer,
+		const BYTE* name,
+		// 默认权限为可写可执行代码
+		const DWORD characteristics = IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ
+	) {
+		std::ofstream file(path, std::ios::binary || std::ios::ate);
+		
+		// 补零使得文件对齐
+		ToFileAlignment(buffer);
+		
+		// 初始化节头
+		// 不能跳过默认参数太蠢了
+		IMAGE_SECTION_HEADER section_header = CreateNewSectionHeader(name, characteristics, GetNewSectionRVA(), GetNewSectionFOA(), buffer.size());
+		
+		// 写入新节的步骤需要在创建节头之后
+		file.seekp(GetNewSectionFOA(), std::ios::beg);
+		// 在文件的末尾写入新节
+		WriteBuffer(file, buffer.c_str(), buffer.size());
+		// 直接写入文件，用于调试
+		//file.flush();
+
+		// 定位到节表头的末尾
+		file.seekp(GetEndSectionHeaderFOA(), std::ios::beg);
+		// 将节表头的内容放到到缓冲区当中
+		CHAR* header_buffer = new CHAR[IMAGE_SIZEOF_SECTION_HEADER + 1];
+		std::memcpy(header_buffer, &section_header, IMAGE_SIZEOF_SECTION_HEADER);
+		// 写入节表头
+		WriteBuffer(file, header_buffer, IMAGE_SIZEOF_SECTION_HEADER);
+		delete[] header_buffer;
+
+		switch (type) {
+		case PE32: {
+			// 定位到 NumberOfSections 字段
+			file.seekp(GetNTHeaderFOA() + 6, std::ios::beg);
+			WORD new_section_number = header.nt_headers32.FileHeader.NumberOfSections + 1;
+			WriteNextWORD(file, new_section_number);
+			// 增加新节后在内存中的大小
+			DWORD new_image_size = header.nt_headers32.OptionalHeader.SizeOfImage + ToSectionAlignment(section_header.SizeOfRawData);
+			// 定位到 SizeofImage 字段
+			file.seekp(GetOptionalHeaderFOA() + 56, std::ios::beg);
+			WriteNextDWORD(file, new_image_size);
+			break;
+		}
+		case PE64: {
+			// 定位到 NumberOfSections 字段
+			file.seekp(GetNTHeaderFOA() + 6, std::ios::beg);
+			WORD new_section_number = header.nt_headers64.FileHeader.NumberOfSections + 1;
+			WriteNextWORD(file, new_section_number);
+			// 增加新节后在内存中的大小
+			DWORD new_image_size = header.nt_headers64.OptionalHeader.SizeOfImage + ToSectionAlignment(section_header.SizeOfRawData);
+			// 定位到 SizeofImage 字段
+			file.seekp(GetOptionalHeaderFOA() + 56, std::ios::beg);
+			WriteNextDWORD(file, new_image_size);
+			break;
+		}
+		}
+
+		file.close();
+	}
+
 	void DisplayPEInfo() {
 		std::cout << "========================================================================\n\n";
 		std::cout << "PE文件路径: " << path << "\n";
+		std::cout << "文件大小: " << GetFileSize() << "\n";
+		std::cout << "ImageBase: " << GetImageBase() << "\n";
 		std::cout << "程序入口点RVA: " << GetEntryPointRVA() << ", FOA: " << GetEntryPointFOA() << "\n";
 		std::cout << "文件对齐: " << GetFileAlignment() << "\n";
 		std::cout << "内存对齐: " << GetSectionAlignment() << "\n";
-		std::cout << "节数量: " << GetSectionsNumber() << "\n";
+		std::cout << "文件头占磁盘大小: " << GetSizeOfHeaders() << "\n";
+		std::cout << "文件头实际大小(节表头末尾): " << GetEndSectionHeaderFOA() << "\n\n";
 		std::cout << "节信息: \n";
+		std::cout << "节数量: " << GetSectionsNumber() << "\n";
+		std::cout << "节表头起始FOA: " << GetSectionHeaderFOA() << "\n";
+		std::cout << "节表头末尾FOA: " << GetEndSectionHeaderFOA() << "\n";
 		for (auto it = header.section_headers.begin(); it != header.section_headers.end(); it++) {
 			std::cout << "--------------------------\n";
 			std::cout << "节名: " << it->Name << "\n";
