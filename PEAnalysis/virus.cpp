@@ -4,7 +4,9 @@
 #include <deque>
 
 
-// 可能不支持 64 位，因为 64 位的 ImageBase 较大
+
+
+// 32 位计算器 shellcode
 std::string GetCalcuatorShellcode32(DWORD entry_point) {
 	// 跳过不执行内联汇编
 	goto end;

@@ -11,11 +11,13 @@ using namespace std;
 
 
 int main() {
+	cout << hex;
+
 	PEHelper pe_info;
 	pe_info.LoadPE("C:/Users/qiufeng/Desktop/hello_world.exe");
+	pe_info.DisplayPEInfo();
 	//pe_info.LoadPE("C:/Users/qiufeng/Desktop/user32.dll");
 	//pe_info.LoadPE("C:/Users/qiufeng/Desktop/user64.dll");
-	cout << hex;
 	//cout << pe_info.GetImageBase() << endl;
 	//cout << pe_info.RVAToFOA(0x12314) << endl;
 
@@ -38,25 +40,34 @@ int main() {
 	//DWORD message_rva = pe_info.GetExportFunctionRVA("MessageBoxA");
 
 	//cout << "是否开启 ALSR: " << pe_info.HasASLR() << endl;
-	pe_info.CloseASLR();
+	//pe_info.CloseASLR();
 	//cout << "是否开启 ALSR: " << pe_info.HasASLR() << endl;
 	//pe_info.OpenASLR();
 	//cout << "是否开启 ALSR: " << pe_info.HasASLR() << endl;
 
-	pe_info.DisplayPEInfo();
-	cout << "新节起始FOA: " << pe_info.GetNewSectionFOA() << endl;
-	cout << "新节起始位置RVA: " << pe_info.GetNewSectionRVA() << endl;
-	string buffer = GetCalcuatorShellcode32(pe_info.GetEntryPointRVA() + pe_info.GetImageBase());
-	// 需要跳过旧 eip
-	pe_info.SetEntryPoint(pe_info.GetNewSectionRVA() + 4);
-	const CHAR* tmp_name = ".qiufeng";
-	BYTE name[8];
-	for (int i = 0; i != IMAGE_SIZEOF_SHORT_NAME; i++) {
-		name[i] = static_cast<BYTE>(tmp_name[i]);
-	}
-	pe_info.AddNewSection(buffer, name);
+	//pe_info.DisplayPEInfo();
+	//cout << "新节起始FOA: " << pe_info.GetNewSectionFOA() << endl;
+	//cout << "新节起始位置RVA: " << pe_info.GetNewSectionRVA() << endl;
+	//string buffer = GetCalcuatorShellcode32(pe_info.GetEntryPointRVA() + pe_info.GetImageBase());
+	//// 需要跳过旧 eip
+	//pe_info.SetEntryPoint(pe_info.GetNewSectionRVA() + 4);
+	//const CHAR* tmp_name = ".qiufeng";
+	//BYTE name[8];
+	//for (int i = 0; i != IMAGE_SIZEOF_SHORT_NAME; i++) {
+	//	name[i] = static_cast<BYTE>(tmp_name[i]);
+	//}
+	//pe_info.AddNewSection(buffer, name);
 	//pe_info.SetEntryPoint(0x10);
 	//pe_info.SetEntryPoint(0x1000);
 
+	InfectHelper vh("C:/Users/qiufeng/Desktop/hello_world.exe");
+	InfectPadding pad = vh.LoadInfectPadding();
+
+	cout << vh.IsInfected();
+	//cout << vh.InfectByAddSection();
+	cout << vh.InfectByCodeCave();
+	cout << vh.IsInfected();
+	cout << vh.RemoveVirus();
+	cout << vh.InfectByAddSection();
 	return 0;
 }

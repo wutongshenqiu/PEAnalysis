@@ -16,6 +16,14 @@ enum PEType {
 	PE32, PE64
 };
 
+// 代码空洞，包括节名、代码空洞 FOA，代码空洞 RVA 和代码空洞大小
+typedef struct _CodeCave {
+	BYTE name[8];
+	ULONGLONG start_foa;
+	ULONGLONG start_rva;
+	DWORD size;
+} CodeCave;
+
 typedef struct _PEHeader {
 	// mz 文件头
 	IMAGE_DOS_HEADER mz_header;
@@ -28,7 +36,7 @@ typedef struct _PEHeader {
 	};
 	// 节表
 	std::vector<IMAGE_SECTION_HEADER> section_headers;
-}PEHeader;
+} PEHeader;
 
 
 class PEHelper {
@@ -232,6 +240,11 @@ public:
 		delete[] buffer;
 	}
 
+	// 获取文件类型
+	PEType GetPEType() {
+		return type;
+	}
+
 	// 获取节数量
 	WORD GetSectionsNumber() {
 		switch (type) {
@@ -247,6 +260,11 @@ public:
 	// NT映像头 FOA
 	DWORD GetNTHeaderFOA() {
 		return header.mz_header.e_lfanew;
+	}
+
+	// Dos Stub FOA
+	DWORD GetDosStubFOA() {
+		return sizeof(header.mz_header);
 	}
 
 	// 返回可选文件头起始 FOA
@@ -427,13 +445,18 @@ public:
 		if (rva < GetSectionAlignment()) {
 			return rva;
 		}
-		// 遍历每一个节
+		// 如果当前节不是最后一个节
 		for (auto it = header.section_headers.begin() + 1; it != header.section_headers.end(); it++) {
 			if (rva < it->VirtualAddress) {
 				it--;
 				// 利用 FOA 之间的差值等于 RVA 之间的差值
 				return it->PointerToRawData + rva - it->VirtualAddress;
 			}
+		}
+		// 如果当前节在最后一个节的范围内
+		IMAGE_SECTION_HEADER last_section_header = header.section_headers[header.section_headers.size() - 1];
+		if (rva <= last_section_header.VirtualAddress + last_section_header.SizeOfRawData) {
+			return last_section_header.PointerToRawData + rva - last_section_header.VirtualAddress;
 		}
 		std::cerr << "RVA超过界限" << std::endl;
 		std::exit(EXIT_FAILURE);
@@ -739,8 +762,13 @@ public:
 		file_in.seekg(dll_characteristics_foa, std::ios::beg);
 		dll_characteristics = ReadNextWORD(file_in);
 		file_in.close();
-		if (if_close) dll_characteristics ^= IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
-		else dll_characteristics |= IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+		// 需要先判断是否已经关闭，否则会还原
+		if (dll_characteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE) {
+			if (if_close) dll_characteristics ^= IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+		}
+		else {
+			if (!if_close) dll_characteristics |= IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+		}
 		// 太坑爹了吧，C艹真的难用
 		// 注意先关闭读取文件，并且使用追加模式打开
 		std::ofstream file_out(path, std::ios::binary || std::ios::app);
@@ -853,10 +881,43 @@ public:
 		file.close();
 	}
 
+	// 搜索代码空洞
+	// 遍历每一个节，查找 0x00 的数目
+	std::vector<CodeCave> SearchCodeCave() {
+		std::vector<CodeCave> cave_vector;
+		std::ifstream file(path, std::ios::binary);
+
+		for (auto it = header.section_headers.begin(); it != header.section_headers.end(); it++) {
+			CodeCave cave;
+			std::memcpy(cave.name, it->Name, IMAGE_SIZEOF_SHORT_NAME);
+			// 
+			// 节的末尾
+			DWORD section_end_foa = it->PointerToRawData + it->SizeOfRawData;
+			// 与节尾的偏移
+			DWORD offset = 0;
+			for (; offset != it->SizeOfRawData; offset++) {
+				// 读文件会读下一个字节
+				file.seekg(section_end_foa - offset - 1, std::ios::beg);
+				if (file.get() != 0x00) {
+					break;
+				}
+			}
+			cave.size = offset;
+			cave.start_foa = section_end_foa - offset;
+			cave.start_rva = it->VirtualAddress + cave.start_foa - it->PointerToRawData;
+			
+			cave_vector.push_back(cave);
+		}
+
+		file.close();
+		return cave_vector;
+	}
+
 	void DisplayPEInfo() {
 		std::cout << "========================================================================\n\n";
 		std::cout << "PE文件路径: " << path << "\n";
 		std::cout << "文件大小: " << GetFileSize() << "\n";
+		std::cout << "ASLR: " << (HasASLR() ? "√\n" : "×\n");
 		std::cout << "ImageBase: " << GetImageBase() << "\n";
 		std::cout << "程序入口点RVA: " << GetEntryPointRVA() << ", FOA: " << GetEntryPointFOA() << "\n";
 		std::cout << "文件对齐: " << GetFileAlignment() << "\n";
@@ -867,12 +928,17 @@ public:
 		std::cout << "节数量: " << GetSectionsNumber() << "\n";
 		std::cout << "节表头起始FOA: " << GetSectionHeaderFOA() << "\n";
 		std::cout << "节表头末尾FOA: " << GetEndSectionHeaderFOA() << "\n";
-		for (auto it = header.section_headers.begin(); it != header.section_headers.end(); it++) {
+
+		std::vector<CodeCave> cave_vector(std::move(SearchCodeCave()));
+		for (int i = 0; i != header.section_headers.size(); i++) {
 			std::cout << "--------------------------\n";
-			std::cout << "节名: " << it->Name << "\n";
-			std::cout << "节大小: " << it->SizeOfRawData << "\n";
-			std::cout << "节起始RVA: " << it->VirtualAddress << "\n";
-			std::cout << "节起始FOA: " << it->PointerToRawData << "\n";
+			std::cout << "节名: " << header.section_headers[i].Name << "\n";
+			std::cout << "节大小: " << header.section_headers[i].SizeOfRawData << "\n";
+			std::cout << "节起始RVA: " << header.section_headers[i].VirtualAddress << "\n";
+			std::cout << "节起始FOA: " << header.section_headers[i].PointerToRawData << "\n";
+			std::cout << "节空洞起始RVA: " << cave_vector[i].start_rva << "\n";
+			std::cout << "节空洞起始FOA: " << cave_vector[i].start_foa << "\n";
+			std::cout << "节空洞大小: " << cave_vector[i].size << "\n";
 			std::cout << "--------------------------\n";
 		}
 		std::cout << "========================================================================\n" << std::endl;
