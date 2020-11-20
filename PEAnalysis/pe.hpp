@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <map>
 #include <tuple>
+#include "utils.hpp"
 
 
 // 假定 PE 文件头的大小不超过 4096 个字节
@@ -16,9 +17,10 @@ enum PEType {
 	PE32, PE64
 };
 
-// 代码空洞，包括节名、代码空洞 FOA，代码空洞 RVA 和代码空洞大小
+// 代码空洞，包括节名、第几个节、代码空洞 FOA，代码空洞 RVA 和代码空洞大小
 typedef struct _CodeCave {
 	BYTE name[8];
+	BYTE section_number;
 	ULONGLONG start_foa;
 	ULONGLONG start_rva;
 	DWORD size;
@@ -106,94 +108,6 @@ private:
 			IMAGE_SECTION_HEADER section_header;
 			std::memcpy(&section_header, buffer + i * 0x28, sizeof(IMAGE_SECTION_HEADER));
 			header.section_headers.push_back(section_header);
-		}
-	}
-
-	void CheckSequenceZero(const BYTE* buffer, int length) {
-		if (!IsSequenceZero(buffer, length)) {
-			std::cerr << "非零错误" << std::endl;
-			std::exit(EXIT_FAILURE);
-		}
-	}
-
-	bool IsSequenceZero(const BYTE* buffer, int length) {
-		for (int i = 0; i != length; i++) {
-			if (buffer[i] != 0x00) {
-				return false;
-			}
-		}
-		return true;
-	}
-
-	// 返回以 '0x00' 结尾的字符串，并且移动文件指针
-	std::string ReadNextString(std::ifstream &file) {
-		std::string name;
-		while (true) {
-			char c = file.get();
-			if (c == 0x00) {
-				return name;
-			}
-			name.push_back(c);
-		}
-	}
-
-	// 读取文件的下一个双字
-	DWORD ReadNextDWORD(std::ifstream& file) {
-		BYTE* buffer = new BYTE[sizeof(DWORD) + 1];
-		for (int i = 0; i != sizeof(DWORD); i++) {
-			buffer[i] = static_cast<BYTE>(file.get());
-		}
-		DWORD next;
-		std::memcpy(&next, buffer, sizeof(DWORD));
-
-		delete[] buffer;
-		return next;
-	}
-
-	// 读取文件的下一个字
-	WORD ReadNextWORD(std::ifstream& file) {
-		BYTE* buffer = new BYTE[sizeof(WORD) + 1];
-		for (int i = 0; i != sizeof(WORD); i++) {
-			buffer[i] = static_cast<BYTE>(file.get());
-		}
-		WORD next;
-		std::memcpy(&next, buffer, sizeof(WORD));
-
-		delete[] buffer;
-		return next;
-	}
-
-	// 写文件的下一个字
-	void WriteNextWORD(std::ofstream& file, WORD word) {
-		CHAR* buffer = new CHAR[sizeof(WORD) + 1];
-		std::memcpy(buffer, &word, sizeof(WORD));
-
-		if (!file.write(buffer, sizeof(WORD))) {
-			std::cerr << "字写入文件失败" << std::endl;
-			std::exit(EXIT_FAILURE);
-		}
-
-		delete[] buffer;
-	}
-
-	// 写文件的下一个双字
-	void WriteNextDWORD(std::ofstream& file, DWORD dword) {
-		CHAR* buffer = new CHAR[sizeof(DWORD) + 1];
-		std::memcpy(buffer, &dword, sizeof(DWORD));
-
-		if (!file.write(buffer, sizeof(DWORD))) {
-			std::cerr << "双字写入文件失败" << std::endl;
-			std::exit(EXIT_FAILURE);
-		}
-
-		delete[] buffer;
-	}
-
-	// 将缓冲区中 size 大小的数据写入文件
-	void WriteBuffer(std::ofstream& file, const CHAR* buffer, ULONGLONG size) {
-		if (!file.write(buffer, size)) {
-			std::cerr << "缓冲区写入文件失败" << std::endl;
-			std::exit(EXIT_FAILURE);
 		}
 	}
 
@@ -732,6 +646,14 @@ public:
 		}
 	}
 
+	IMAGE_SECTION_HEADER GetSectionHeader(UINT32 index) {
+		if (index < 0 || index >= header.section_headers.size()) {
+			std::cerr << "超过索引范围" << std::endl;
+			std::exit(EXIT_FAILURE);
+		}
+		return header.section_headers[index];
+	}
+
 	// ASLR 位于可选文件头的 DLL Characteristics
 	// https://www.jianshu.com/p/91b2b6665e64
 	bool HasASLR() {
@@ -779,6 +701,7 @@ public:
 		// 重新导入
 		LoadPE(path);
 	}
+
 	void CloseASLR() {
 		ASLRAction(true);
 	}
@@ -890,7 +813,8 @@ public:
 		for (auto it = header.section_headers.begin(); it != header.section_headers.end(); it++) {
 			CodeCave cave;
 			std::memcpy(cave.name, it->Name, IMAGE_SIZEOF_SHORT_NAME);
-			// 
+			cave.section_number = it - header.section_headers.begin();
+
 			// 节的末尾
 			DWORD section_end_foa = it->PointerToRawData + it->SizeOfRawData;
 			// 与节尾的偏移
@@ -916,8 +840,9 @@ public:
 	void DisplayPEInfo() {
 		std::cout << "========================================================================\n\n";
 		std::cout << "PE文件路径: " << path << "\n";
+		std::cout << "PE文件类型: " << ((GetPEType() == PE32) ? "PE32" : "PE64") << "\n";
 		std::cout << "文件大小: " << GetFileSize() << "\n";
-		std::cout << "ASLR: " << (HasASLR() ? "√\n" : "×\n");
+		std::cout << "ASLR: " << (HasASLR() ? "√" : "×") << "\n";
 		std::cout << "ImageBase: " << GetImageBase() << "\n";
 		std::cout << "程序入口点RVA: " << GetEntryPointRVA() << ", FOA: " << GetEntryPointFOA() << "\n";
 		std::cout << "文件对齐: " << GetFileAlignment() << "\n";

@@ -142,10 +142,12 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="test.cpp" />
+    <ClCompile Include="utils.cpp" />
     <ClCompile Include="virus.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pe.hpp" />
+    <ClInclude Include="utils.hpp" />
     <ClInclude Include="virus.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

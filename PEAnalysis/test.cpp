@@ -12,9 +12,9 @@ using namespace std;
 
 int main() {
 	cout << hex;
-
+	string pe_file("C:/Users/qiufeng/Desktop/hello_world.exe");
 	PEHelper pe_info;
-	pe_info.LoadPE("C:/Users/qiufeng/Desktop/hello_world.exe");
+	pe_info.LoadPE(pe_file);
 	pe_info.DisplayPEInfo();
 	//pe_info.LoadPE("C:/Users/qiufeng/Desktop/user32.dll");
 	//pe_info.LoadPE("C:/Users/qiufeng/Desktop/user64.dll");
@@ -60,14 +60,21 @@ int main() {
 	//pe_info.SetEntryPoint(0x10);
 	//pe_info.SetEntryPoint(0x1000);
 
-	InfectHelper vh("C:/Users/qiufeng/Desktop/hello_world.exe");
+	InfectHelper vh(pe_file);
 	InfectPadding pad = vh.LoadInfectPadding();
 
 	cout << vh.IsInfected();
-	//cout << vh.InfectByAddSection();
+	cout << vh.InfectByAddSection();
 	cout << vh.InfectByCodeCave();
 	cout << vh.IsInfected();
 	cout << vh.RemoveVirus();
+	cout << vh.InfectByCodeCave();
 	cout << vh.InfectByAddSection();
+	cout << vh.RemoveVirus();
+	cout << vh.IsInfected();
+	cout << vh.IsInfected();
+	cout << vh.InfectByAddSection();
+	cout << vh.InfectByCodeCave();
+	cout << vh.RemoveVirus();
 	return 0;
 }
